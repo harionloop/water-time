@@ -1,6 +1,8 @@
-'use client';
+"use client"
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import * as THREE from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'; // Added .js extension
 
 // Define types for better code readability and maintainability
 interface ReminderSettings {
@@ -9,13 +11,6 @@ interface ReminderSettings {
     visual: boolean;
 }
 
-// Body SVG paths for different body types
-const bodyPaths: { [key: string]: string } = {
-    generic: "M100 20 C120 20, 130 50, 130 80 S120 150, 100 150 S80 150, 70 80 S80 50, 100 20 M100 150 L100 200 C130 200, 140 250, 140 300 S120 400, 100 400 S80 400, 60 300 S70 200, 100 200 Z",
-    slim: "M100 20 C115 20, 120 50, 120 80 S110 150, 100 150 S90 150, 80 80 S85 50, 100 20 M100 150 L100 200 C120 200, 125 250, 125 300 S110 400, 100 400 S90 400, 75 300 S80 200, 100 200 Z",
-    muscular: "M100 20 C125 20, 140 50, 140 80 S130 150, 100 150 S70 150, 60 80 S75 50, 100 20 M100 150 L100 200 C140 200, 150 250, 150 300 S130 400, 100 400 S70 400, 50 300 S60 200, 100 200 Z"
-};
-
 // Base64 encoded audio for a simple beep sound
 const reminderAudioData = 'data:audio/wav;base64,UklGRlQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAAABmYWN0BAAAAAIAAAAAV2F2ZUxpstQAAABkYXRhAAAAAAABAAAAAQAAAgAAAAIAAAADAAAAAwAAAAQAAAAEAAAABQAAAAUAAAAGAAAABgAAAAcAAAAHAAAACAAAAAgAAAAJAAAACQAAAAoAAAAKAAAACwAAAAsAAAAMAAAADAAAAA0AAAANAAAADgAAAA4AAAAPAAAADwAAABAQEA==';
 
@@ -23,7 +18,7 @@ const HomePage: React.FC = () => {
     // State variables for the application
     const [currentWaterLevel, setCurrentWaterLevel] = useState<number>(100); // Water level in percentage
     const [timerDuration, setTimerDuration] = useState<number>(60); // Timer duration in minutes
-    const [selectedBodyType, setSelectedBodyType] = useState<string>('generic'); // Selected body type
+    const [selectedBodyType, setSelectedBodyType] = useState<string>('generic'); // Selected body type (will influence 3D model slightly or be a placeholder)
     const [reminderSettings, setReminderSettings] = useState<ReminderSettings>({
         browser: false,
         sound: false,
@@ -32,6 +27,15 @@ const HomePage: React.FC = () => {
     const [hydrationTip, setHydrationTip] = useState<string>(''); // AI-generated hydration tip
     const [isLoadingTip, setIsLoadingTip] = useState<boolean>(false); // Loading state for AI tip
     const [messageBox, setMessageBox] = useState<{ message: string; visible: boolean }>({ message: '', visible: false }); // Custom message box state
+
+    // Refs for Three.js elements
+    const mountRef = useRef<HTMLDivElement>(null); // Ref for the canvas container
+    const sceneRef = useRef<THREE.Scene | null>(null);
+    const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
+    const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
+    const controlsRef = useRef<OrbitControls | null>(null);
+    const bodyMeshRef = useRef<THREE.Mesh | null>(null);
+    const clippingPlaneRef = useRef<THREE.Plane | null>(null);
 
     // Ref for the interval timer to manage its lifecycle
     const hydrationIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -98,7 +102,7 @@ const HomePage: React.FC = () => {
      * Applies a visual flash animation to the body container.
      */
     const applyVisualFlash = useCallback(() => {
-        const bodyContainer = document.getElementById('body-svg-container');
+        const bodyContainer = document.getElementById('body-3d-container');
         if (bodyContainer) {
             bodyContainer.classList.add('animate-pulse', 'bg-blue-200'); // Add pulse animation and light blue background
             setTimeout(() => {
@@ -123,22 +127,36 @@ const HomePage: React.FC = () => {
     }, [reminderSettings, sendBrowserNotification, playReminderSound, applyVisualFlash]);
 
     /**
-     * Updates the visual water level and hydration status text.
+     * Updates the 3D water level visual and status text.
      */
     const updateWaterLevelVisual = useCallback(() => {
-        const waterFillDiv = document.getElementById('water-fill');
         const hydrationStatusText = document.getElementById('hydration-status-text');
-        if (waterFillDiv && hydrationStatusText) {
-            waterFillDiv.style.height = `${currentWaterLevel}%`;
+        if (hydrationStatusText) {
             hydrationStatusText.textContent = `You are ${Math.round(currentWaterLevel)}% hydrated!`;
+        }
 
-            // Change color of water fill based on level
+        if (clippingPlaneRef.current && bodyMeshRef.current) {
+            // Map 0-100% water level to the Y-position of the clipping plane
+            // Assuming the body mesh is centered around Y=0 and has a height of 2 units (e.g., -1 to 1)
+            // Adjust these values based on your actual 3D model's dimensions
+            const bodyHeight = 2; // Example height of the 3D body
+            const baseLevel = -bodyHeight / 2; // Bottom of the body
+            const topLevel = bodyHeight / 2; // Top of the body
+
+            // Calculate the Y position for the clipping plane
+            // 0% water = clipping plane at topLevel (body is empty)
+            // 100% water = clipping plane at baseLevel (body is full)
+            const clippingY = baseLevel + (topLevel - baseLevel) * (1 - currentWaterLevel / 100);
+            clippingPlaneRef.current.constant = -clippingY; // Plane normal is (0,1,0), so constant is -y
+
+            // Change color of water fill based on level by manipulating material color
+            const material = bodyMeshRef.current.material as THREE.MeshStandardMaterial;
             if (currentWaterLevel < 30) {
-                waterFillDiv.style.backgroundColor = '#ef4444'; // Red for very low
+                material.color.setHex(0xef4444); // Red for very low
             } else if (currentWaterLevel < 60) {
-                waterFillDiv.style.backgroundColor = '#f97316'; // Orange for low
+                material.color.setHex(0xf97316); // Orange for low
             } else {
-                waterFillDiv.style.backgroundColor = '#60a5fa'; // Blue for good
+                material.color.setHex(0x60a5fa); // Blue for good
             }
         }
     }, [currentWaterLevel]);
@@ -191,7 +209,141 @@ const HomePage: React.FC = () => {
         showMessage("Hydration reset! Drink up!", 2000);
     }, [startHydrationTimer, showMessage]);
 
-    // Effect to update the visual water level whenever currentWaterLevel changes
+    // --- Three.js Setup Effect ---
+    useEffect(() => {
+        if (!mountRef.current) return;
+
+        const currentMount = mountRef.current;
+        const width = currentMount.clientWidth;
+        const height = currentMount.clientHeight;
+
+        // Scene
+        const scene = new THREE.Scene();
+        sceneRef.current = scene;
+        scene.background = new THREE.Color(0xf0f9ff); // Light blue background for the scene
+
+        // Camera
+        const camera = new THREE.PerspectiveCamera(75, width / height, 0.1, 1000);
+        camera.position.set(0, 1.5, 3); // Position camera to view the body
+        cameraRef.current = camera;
+
+        // Renderer
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(width, height);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        renderer.localClippingEnabled = true; // Enable local clipping
+        rendererRef.current = renderer;
+        currentMount.appendChild(renderer.domElement);
+
+        // Lights
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6); // Soft ambient light
+        scene.add(ambientLight);
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8); // Directional light
+        directionalLight.position.set(5, 5, 5);
+        scene.add(directionalLight);
+
+        // Clipping Plane
+        const clippingPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0); // Normal (0,1,0) means it cuts horizontally. Constant is distance from origin.
+        clippingPlaneRef.current = clippingPlane;
+
+        // Create 3D Human Body Model (Stylized)
+        const bodyGroup = new THREE.Group();
+
+        // Torso
+        const torsoGeometry = new THREE.CapsuleGeometry(0.4, 1.2, 8, 16);
+        const bodyMaterial = new THREE.MeshStandardMaterial({
+            color: 0x60a5fa, // Initial water color
+            side: THREE.DoubleSide,
+            clippingPlanes: [clippingPlane], // Apply clipping plane to the material
+            clipShadows: true,
+        });
+        const torso = new THREE.Mesh(torsoGeometry, bodyMaterial);
+        torso.position.y = 0; // Center of the body
+        bodyGroup.add(torso);
+
+        // Head
+        const headGeometry = new THREE.SphereGeometry(0.3, 32, 32);
+        const head = new THREE.Mesh(headGeometry, bodyMaterial);
+        head.position.y = 1.0; // Position above torso
+        bodyGroup.add(head);
+
+        // Arms (simplified as cylinders)
+        const armGeometry = new THREE.CylinderGeometry(0.1, 0.1, 0.8, 16);
+        const leftArm = new THREE.Mesh(armGeometry, bodyMaterial);
+        leftArm.position.set(-0.5, 0.4, 0);
+        leftArm.rotation.z = Math.PI / 4; // Angle for arms
+        bodyGroup.add(leftArm);
+
+        const rightArm = new THREE.Mesh(armGeometry, bodyMaterial);
+        rightArm.position.set(0.5, 0.4, 0);
+        rightArm.rotation.z = -Math.PI / 4;
+        bodyGroup.add(rightArm);
+
+        // Legs (simplified as cylinders)
+        const legGeometry = new THREE.CylinderGeometry(0.15, 0.15, 1.0, 16);
+        const leftLeg = new THREE.Mesh(legGeometry, bodyMaterial);
+        leftLeg.position.set(-0.2, -1.0, 0);
+        bodyGroup.add(leftLeg);
+
+        const rightLeg = new THREE.Mesh(legGeometry, bodyMaterial);
+        rightLeg.position.set(0.2, -1.0, 0);
+        bodyGroup.add(rightLeg);
+
+        // Store the main body mesh for water level updates
+        bodyMeshRef.current = torso; // Using torso as the primary mesh for material/clipping updates
+
+        scene.add(bodyGroup);
+
+        // Orbit Controls
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true; // Enable smooth camera movement
+        controls.dampingFactor = 0.05;
+        controls.screenSpacePanning = false;
+        controls.minDistance = 2;
+        controls.maxDistance = 5;
+        controls.maxPolarAngle = Math.PI / 2; // Prevent camera from going below the ground
+        controlsRef.current = controls;
+
+        // Animation loop
+        const animate = () => {
+            requestAnimationFrame(animate);
+            controls.update(); // Only required if controls.enableDamping is set to true
+            renderer.render(scene, camera);
+        };
+        animate();
+
+        // Handle window resize
+        const onWindowResize = () => {
+            if (mountRef.current && cameraRef.current && rendererRef.current) {
+                const newWidth = mountRef.current.clientWidth;
+                const newHeight = mountRef.current.clientHeight;
+                cameraRef.current.aspect = newWidth / newHeight;
+                cameraRef.current.updateProjectionMatrix();
+                rendererRef.current.setSize(newWidth, newHeight);
+            }
+        };
+        window.addEventListener('resize', onWindowResize);
+
+        // Cleanup function
+        return () => {
+            window.removeEventListener('resize', onWindowResize);
+            if (rendererRef.current) {
+                currentMount.removeChild(rendererRef.current.domElement);
+                rendererRef.current.dispose();
+            }
+            if (controlsRef.current) {
+                controlsRef.current.dispose();
+            }
+            // Dispose geometries and materials to prevent memory leaks
+            torsoGeometry.dispose();
+            headGeometry.dispose();
+            armGeometry.dispose();
+            legGeometry.dispose();
+            bodyMaterial.dispose();
+        };
+    }, []); // Empty dependency array means this runs once on mount
+
+    // Effect to update the 3D water level visual whenever currentWaterLevel changes
     useEffect(() => {
         updateWaterLevelVisual();
     }, [currentWaterLevel, updateWaterLevelVisual]);
@@ -213,7 +365,7 @@ const HomePage: React.FC = () => {
         const initialBodyButton = document.getElementById(`bodyType${selectedBodyType.charAt(0).toUpperCase() + selectedBodyType.slice(1)}`);
         initialBodyButton?.classList.add('bg-blue-600', 'text-white');
 
-        // showMessage("Welcome! Stay hydrated!", 3000);
+        showMessage("Welcome! Stay hydrated!", 3000);
     }, [showMessage, selectedBodyType]); // Only run once on mount
 
     /**
@@ -226,6 +378,10 @@ const HomePage: React.FC = () => {
 
     /**
      * Handles body type selection.
+     * For 3D, this might involve scaling or subtle reshaping.
+     * For this initial 3D implementation, we'll keep the body model static,
+     * but the button active state will still update.
+     * Future enhancement: Load different 3D models or apply transformations.
      * @param bodyType The selected body type string.
      */
     const handleBodyTypeChange = (bodyType: string) => {
@@ -237,11 +393,9 @@ const HomePage: React.FC = () => {
         });
         document.getElementById(`bodyType${bodyType.charAt(0).toUpperCase() + bodyType.slice(1)}`)?.classList.add('bg-blue-600', 'text-white');
 
-        // Update SVG path
-        const bodyOutlinePath = document.getElementById('body-outline-path');
-        if (bodyOutlinePath && bodyPaths[bodyType]) {
-            bodyOutlinePath.setAttribute('d', bodyPaths[bodyType]);
-        }
+        // Note: For a truly different 3D body type, you'd load a different model
+        // or apply significant transformations here. For simplicity, the 3D model
+        // remains generic for now, but the UI feedback is present.
     };
 
     /**
@@ -414,10 +568,7 @@ const HomePage: React.FC = () => {
                                 // Manually remove active class from all body type buttons and re-add to generic
                                 document.querySelectorAll('.body-type-btn').forEach(btn => btn.classList.remove('bg-blue-600', 'text-white'));
                                 document.getElementById('bodyTypeGeneric')?.classList.add('bg-blue-600', 'text-white');
-                                const bodyOutlinePath = document.getElementById('body-outline-path');
-                                if (bodyOutlinePath) {
-                                    bodyOutlinePath.setAttribute('d', bodyPaths.generic);
-                                }
+                                // No SVG path to update for 3D model
                                 resetHydration(); // Reset water and timer
                                 showMessage("All settings reset!", 2000);
                             }}
@@ -428,20 +579,15 @@ const HomePage: React.FC = () => {
                     </div>
                 </div>
 
-                {/* Center Section: Human Body Visual */}
+                {/* Center Section: Human Body Visual (3D) */}
                 <div className="body-visual-section w-full md:w-1/2 flex flex-col items-center justify-center relative p-6 bg-white rounded-2xl shadow-xl border border-gray-100">
                     <h1 className="text-4xl font-extrabold text-blue-900 mb-8 text-center leading-tight">Your Hydration Status</h1>
-                    <div id="body-svg-container" className="relative w-full max-w-xs h-auto flex justify-center items-center min-h-[450px] overflow-hidden rounded-full transition-all duration-500 ease-in-out">
-                        {/* SVG for body outline */}
-                        <svg id="human-body-svg" className="w-full h-auto block relative z-10" viewBox="0 0 200 400" preserveAspectRatio="xMidYMid meet">
-                            <path id="body-outline-path" className="fill-none stroke-gray-400 stroke-[2.5]" d={bodyPaths[selectedBodyType]}/>
-                        </svg>
-                        {/* Water fill element */}
-                        <div
-                            id="water-fill"
-                            className="absolute bottom-0 left-0 w-full bg-blue-500 rounded-b-full transition-all duration-1000 ease-out"
-                            style={{ height: `${currentWaterLevel}%` }}
-                        ></div>
+                    <div
+                        id="body-3d-container"
+                        ref={mountRef}
+                        className="relative w-full max-w-xs h-[450px] flex justify-center items-center overflow-hidden rounded-full transition-all duration-500 ease-in-out bg-transparent"
+                    >
+                        {/* Three.js canvas will be appended here */}
                     </div>
                     <p id="hydration-status-text" className="text-2xl font-bold text-blue-700 mt-8 text-center">
                         You are {Math.round(currentWaterLevel)}% hydrated!
